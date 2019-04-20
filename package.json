@@ -1,0 +1,15 @@
+{
+  "name": "mcontrol",
+  "version": "1.0.0",
+  "description": "Currently just a util to download all minecraft addon metadata from Curse.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "author": "Rhakka",
+  "license": "ISC",
+  "dependencies": {
+    "node-fetch": "^2.3.0"
+  }
+}
