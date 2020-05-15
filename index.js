@@ -1,81 +1,90 @@
-const fetch = require("node-fetch")
-const fs = require("fs")
-const path = require("path")
+const fetch = require('node-fetch');
+const fs = require('fs');
 
-const pageSize = 25
-const addonsDir = './addons'
+const pageSize = 25;
+const addonsDir = './addons';
 
-let urls = []
-let results = []
-let done = false
-let newDateModified = null
-let lastDateModified = null
+let done = false;
+let thisRunTimestamp = null;
+let lastRunTimestamp = null;
+const lastRunTimestampFilename = 'lastRunTimestamp';
 
-for (let i = 0; i < 500; i++) {
-  urls.push(
-    "https://addons-ecs.forgesvc.net/api/addon/search" +
-      `?categoryId=0&gameId=432&gameVersion=&index=${i *
-        pageSize}&pageSize=${pageSize}&searchFilter=&sectionId=6&sort=2`
-  )
-}
-
+// make sure we have an addons directory to write to
 if (!fs.existsSync(addonsDir)) {
-  fs.mkdirSync(addonsDir)
+  fs.mkdirSync(addonsDir);
 }
 
+// read or set the last date modified, which determines where we stop making requests
 try {
-  lastDateModified = new Date(parseInt(fs.readFileSync("lastDateModified", "utf8"), 10)).getTime()
-  newDateModified = lastDateModified
+  lastRunTimestamp = new Date(
+    parseInt(fs.readFileSync(lastRunTimestampFilename, 'utf8'), 10)
+  ).getTime();
 } catch (err) {
-  // nothing to do here, really, we just aren't going to set the date because we couldn't find the file
-  console.log(`leaves lastDateModified as ${lastDateModified}`)
+  lastRunTimestamp = 0;
 }
 
-// results is only useful for being notified when the reduction is complete as
-// it will only contain the final promise that the array was reduced to
-let promises = urls.reduce((accumulatorPromise, nextUrl, index) => {
-  return accumulatorPromise.then(() => {
-    if (!done) {
-      return fetch(nextUrl)
-        .then(e => {
-          return e.json()
-        })
-        .then(json => {
-          console.log(`found ${json.length} addons`)
-          if (json.length < pageSize) {
-            // received fewer addons than requested page size = next fetch will have 0
-            done = true
-          }
-          for (let i = 0; i < json.length; i++) {
-            const addon = json[i]
-            const addonDateModified = Date.parse(addon.dateModified)
-            console.log(`addon: ${addon.slug} - dateModified: ${addonDateModified}`)
-            // set newDateModified to newest date found so far
-            if (newDateModified === null || addonDateModified > newDateModified) {
-              newDateModified = addonDateModified
-            }
-            // we have a last modified and it's newer than this addon, we're done
-            // if we don't have a new modified date, we want the entire list
-            if (lastDateModified !== null && lastDateModified > addonDateModified) {
-              console.log("addon older than recorded date, finishing")
-              done = true
-              return results
-            } else {
-              const filename = `${addon.id}-${addon.slug}.json`
-              console.log(`writing json to file ${filename}`)
-              fs.writeFileSync(`addons/${filename}`, JSON.stringify(addon))
-              results.push(json)
-            }
-          }
-          // TODO: just return the count here? so we don't make a massive array in memory? (or even just resolve)
-        })
-    }
-  })
-}, Promise.resolve())
+// set the latest modified time to right now, for the next time we run the script
+thisRunTimestamp = new Date().getTime();
 
-promises.then(() => {
-  if (newDateModified) {
-    fs.writeFileSync("lastDateModified", newDateModified.toString())
+// TODO(dmauldin): through experimentation, it appears that the query's index
+// value must be < 10_000, so we'll need to limit the generator or return some
+// value that can be read in the main loop so it knows to stop the queries
+// The lowest addon id I read on 5/15/2020 was 220311, which is silents-gems,
+// which I know is not the first earliest addon.
+
+/**
+ * it actually looks like the index + pageSize cannot be over 10000
+ * ie: index=9975&pageSize=25 works, but index=9976&pageSize=25 will return a 500
+ */
+
+/**
+ * Should be able to get around this issue by separating the requests into
+ * categories or game versions (I think sections are for packs, mods, resource
+ * packs, etc)
+ */
+
+// TODO(dmauldin): create enums (just js objects?) for all of the query params
+// TODO(dmauldin): use something like the querystring module to build the query string
+//                 from an object
+
+// create and instance a generator so we can just get the next url
+const urlGenerator = (function* () {
+  let index = 0;
+  while (true) {
+    console.log(index);
+    yield 'https://addons-ecs.forgesvc.net/api/v2/addon/search' +
+      `?categoryId=0&gameId=432&gameVersion=&index=${
+        index++ * pageSize
+      }&pageSize=${pageSize}&searchFilter=&sectionId=6&sort=2`;
   }
-  console.log(results.length)
-})
+})();
+
+// process and write out the addon json
+const handleAddon = (addon) => {
+  const filename = `${addon.id}-${addon.slug}.json`;
+  // TODO(dmauldin): this can probably be async
+  fs.writeFileSync(`addons/${filename}`, JSON.stringify(addon));
+};
+
+// TODO(dmauldin): this should really be the newest `dateModified` value from all addons
+fs.writeFileSync(lastRunTimestampFilename, thisRunTimestamp);
+
+// this is the main loop that fetches from the API until we're fetching old
+// data or have no more data to fetch
+(async () => {
+  while (!done) {
+    const url = urlGenerator.next().value;
+    // TODO(dmauldin): handle failed fetches (using await instead of promise)
+    const res = await fetch(url);
+    const addons = await res.json();
+    addons.forEach((addon) => {
+      handleAddon(addon);
+    });
+    if (
+      addons.length < pageSize ||
+      Date.parse(addons[addons.length - 1].dateModified) < lastRunTimestamp
+    ) {
+      done = true;
+    }
+  }
+})();
